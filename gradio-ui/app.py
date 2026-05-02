@@ -32,22 +32,29 @@ def check_health(sidecar_url: str) -> str:
 
 
 def respond(message, history, model, system_prompt, do_stream, sidecar_url):
-    """Generator: yields (history, request_json, response_json, latency, tokens) tuples."""
+    """
+    history is a list of {"role": "user"|"assistant", "content": str} dicts (Gradio 5 format).
+    Yields (history, request_json, response_json, latency, tokens).
+    """
     client = make_client(sidecar_url)
 
     messages = []
     if system_prompt.strip():
         messages.append({"role": "system", "content": system_prompt})
-    for user_msg, bot_msg in history:
-        messages.append({"role": "user", "content": user_msg})
-        if bot_msg:
-            messages.append({"role": "assistant", "content": bot_msg})
+    for item in history:
+        messages.append({"role": item["role"], "content": item["content"]})
     messages.append({"role": "user", "content": message})
 
     req_payload = {"model": model, "messages": messages, "stream": do_stream}
     req_json = json.dumps(req_payload, indent=2)
 
     start = time.time()
+
+    def updated(assistant_text):
+        return history + [
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": assistant_text},
+        ]
 
     try:
         if do_stream:
@@ -69,54 +76,39 @@ def respond(message, history, model, system_prompt, do_stream, sidecar_url):
                         ttft_ms = (time.time() - start) * 1000
                     response_text += delta
                     elapsed = f"{(time.time() - start) * 1000:.0f} ms  |  TTFT {ttft_ms:.0f} ms"
-                    yield (
-                        history + [[message, response_text]],
-                        req_json,
-                        "streaming…",
-                        elapsed,
-                        usage_text,
-                    )
+                    yield updated(response_text), req_json, "streaming…", elapsed, usage_text
+
                 if getattr(chunk, "usage", None):
                     u = chunk.usage
-                    usage_text = f"prompt {u.prompt_tokens}  +  completion {u.completion_tokens}  =  {u.total_tokens} tokens"
+                    usage_text = (
+                        f"prompt {u.prompt_tokens}  +  "
+                        f"completion {u.completion_tokens}  =  "
+                        f"{u.total_tokens} tokens"
+                    )
 
             elapsed = f"{(time.time() - start) * 1000:.0f} ms  |  TTFT {ttft_ms:.0f} ms"
-            yield (
-                history + [[message, response_text]],
-                req_json,
-                f"stream complete — {len(response_text)} chars",
-                elapsed,
-                usage_text,
-            )
+            yield updated(response_text), req_json, f"stream complete — {len(response_text)} chars", elapsed, usage_text
 
         else:
             resp = client.chat.completions.create(model=model, messages=messages)
             elapsed = f"{(time.time() - start) * 1000:.0f} ms"
             resp_json = json.dumps(resp.model_dump(), indent=2)
             u = resp.usage
-            usage_text = f"prompt {u.prompt_tokens}  +  completion {u.completion_tokens}  =  {u.total_tokens} tokens"
-            yield (
-                history + [[message, resp.choices[0].message.content]],
-                req_json,
-                resp_json,
-                elapsed,
-                usage_text,
+            usage_text = (
+                f"prompt {u.prompt_tokens}  +  "
+                f"completion {u.completion_tokens}  =  "
+                f"{u.total_tokens} tokens"
             )
+            yield updated(resp.choices[0].message.content), req_json, resp_json, elapsed, usage_text
 
     except Exception as e:
         elapsed = f"{(time.time() - start) * 1000:.0f} ms"
-        yield (
-            history + [[message, f"❌ {e}"]],
-            req_json,
-            str(e),
-            elapsed,
-            "—",
-        )
+        yield updated(f"❌ {e}"), req_json, str(e), elapsed, "—"
 
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 
-with gr.Blocks(title="LLM Sidecar Monitor", theme=gr.themes.Soft()) as app:
+with gr.Blocks(title="LLM Sidecar Monitor") as app:
 
     gr.Markdown("# LLM Sidecar Monitor")
 
@@ -128,7 +120,11 @@ with gr.Blocks(title="LLM Sidecar Monitor", theme=gr.themes.Soft()) as app:
 
                 # Left — conversation
                 with gr.Column(scale=2):
-                    chatbot = gr.Chatbot(height=480, label="Conversation", show_copy_button=True)
+                    chatbot = gr.Chatbot(
+                        height=480,
+                        label="Conversation",
+                        buttons=["copy", "copy_all"],
+                    )
                     with gr.Row():
                         msg_input = gr.Textbox(
                             placeholder="Type a message and press Enter…",
@@ -142,8 +138,7 @@ with gr.Blocks(title="LLM Sidecar Monitor", theme=gr.themes.Soft()) as app:
                 with gr.Column(scale=1):
                     gr.Markdown("### ⚙️ Settings")
                     sidecar_url_input = gr.Textbox(value=SIDECAR_URL, label="Sidecar URL")
-                    with gr.Row():
-                        check_btn = gr.Button("Check health", size="sm")
+                    check_btn = gr.Button("Check health", size="sm")
                     status_box = gr.Textbox(label="Status", interactive=False)
 
                     model_dd = gr.Dropdown(
@@ -220,10 +215,8 @@ Once the control plane is active, this tab will show:
         outputs=[chatbot, request_box, response_box, latency_box, tokens_box],
     )
     check_btn.click(check_health, inputs=[sidecar_url_input], outputs=[status_box])
-
-    # Run health check automatically on load
     app.load(check_health, inputs=[sidecar_url_input], outputs=[status_box])
 
 
 if __name__ == "__main__":
-    app.launch(server_name="0.0.0.0", server_port=7860)
+    app.launch(server_name="0.0.0.0", server_port=7860, theme=gr.themes.Soft())
