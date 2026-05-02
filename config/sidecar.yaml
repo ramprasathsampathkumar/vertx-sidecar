@@ -1,0 +1,17 @@
+server:
+  port: 8080
+
+providers:
+  openai:
+    upstream: "https://api.openai.com"
+    prefix: "/openai"
+    authHeader: "Authorization"
+    authPrefix: "Bearer "
+    apiKeyEnvVar: "OPENAI_API_KEY"
+
+  anthropic:
+    upstream: "https://api.anthropic.com"
+    prefix: "/anthropic"
+    authHeader: "x-api-key"
+    authPrefix: ""
+    apiKeyEnvVar: "ANTHROPIC_API_KEY"
