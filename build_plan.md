@@ -86,6 +86,29 @@ safety, and control for free. Evolves into a centralized LLM gateway at Phase 5.
 
 ---
 
+## Companion UI — Gradio Monitor
+
+A Python Gradio app that runs as a companion container alongside the sidecar.
+Serves two purposes: interactive LLM testing through the sidecar, and a phase-by-phase
+visibility dashboard that grows as each sidecar phase ships.
+
+```
+docker compose up   →   sidecar :8080  +  gradio-ui :7860
+```
+
+| Phase | Tab added | What it shows |
+|---|---|---|
+| **1 (current)** | 💬 Chat | Live chat through the sidecar; request/response inspector; latency + TTFT; token usage |
+| **2** | 📊 Metrics | Token counts, cost estimates, p99 latency, error rates from `/metrics` |
+| **3** | 🛡️ Safety | Before/after PII redaction diff, prompt injection alerts, policy violation log |
+| **4** | 🎛️ Control | Rate limit gauge, cache hit/miss ratio, model routing decisions, fallback status |
+
+**Design rule**: each tab is only wired up when the corresponding sidecar phase is built.
+Placeholder tabs are visible but clearly labelled "Coming in Phase N" so stakeholders can
+see the roadmap without confusion.
+
+---
+
 ## Principles
 
 - **Fail-open**: if the sidecar crashes, calls fall through to the provider directly (configurable).

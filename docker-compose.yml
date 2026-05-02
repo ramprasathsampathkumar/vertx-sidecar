@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   llm-sidecar:
     build: .
@@ -16,4 +14,15 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+    restart: unless-stopped
+
+  gradio-ui:
+    build: ./gradio-ui
+    ports:
+      - "7860:7860"
+    environment:
+      - SIDECAR_URL=http://llm-sidecar:8080
+    depends_on:
+      llm-sidecar:
+        condition: service_healthy
     restart: unless-stopped
