@@ -1,6 +1,7 @@
 package com.llmsidecar;
 
 import com.llmsidecar.config.SidecarConfig;
+import com.llmsidecar.observability.MetricsStore;
 import com.llmsidecar.proxy.ProxyRouter;
 import io.vertx.config.ConfigRetriever;
 import io.vertx.config.ConfigRetrieverOptions;
@@ -37,8 +38,9 @@ public class MainVerticle extends AbstractVerticle {
     }
 
     private void startServer(SidecarConfig config, Promise<Void> startPromise) {
+        MetricsStore metricsStore = new MetricsStore();
         vertx.createHttpServer()
-            .requestHandler(ProxyRouter.create(vertx, config))
+            .requestHandler(ProxyRouter.create(vertx, config, metricsStore))
             .listen(config.port())
             .onSuccess(server -> {
                 log.info("LLM Sidecar listening on :{}", server.actualPort());

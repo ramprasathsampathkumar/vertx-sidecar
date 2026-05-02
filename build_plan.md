@@ -3,7 +3,7 @@
 ## Overview
 
 A co-located Vert.x service that intercepts all outbound LLM calls from a Lambda function.
-Teams point their SDK base URL at `http://localhost:8080/{provider}` and get observability,
+Teams point their SDK base URL at `http://<sidecar-host>/{provider}` and get observability,
 safety, and control for free. Evolves into a centralized LLM gateway at Phase 5.
 
 ---
@@ -21,11 +21,11 @@ safety, and control for free. Evolves into a centralized LLM gateway at Phase 5.
 | Health endpoint | `GET /health` for Docker/orchestrator liveness checks |
 | Docker packaging | Multi-stage Dockerfile + Docker Compose for local dev |
 
-**Adoption cost for teams**: change `OPENAI_BASE_URL` from `https://api.openai.com` to `http://localhost:8080/openai`. Nothing else.
+**Adoption cost for teams**: set `SIDECAR_URL` (e.g. `http://llm-sidecar:8080`) and change `OPENAI_BASE_URL` from `https://api.openai.com` to `$SIDECAR_URL/openai`. Nothing else.
 
 ---
 
-## Phase 2 — Observability
+## Phase 2 — Observability ✅ (current)
 
 **Goal**: Full visibility across every LLM call, zero instrumentation burden on teams.
 

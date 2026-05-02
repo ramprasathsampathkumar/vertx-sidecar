@@ -14,7 +14,7 @@ public record SidecarConfig(int port, Map<String, ProviderConfig> providers) {
         Map<String, ProviderConfig> providers = new HashMap<>();
         JsonObject providersJson = config.getJsonObject("providers", new JsonObject());
         providersJson.forEach(entry ->
-            providers.put(entry.getKey(), ProviderConfig.from((JsonObject) entry.getValue()))
+            providers.put(entry.getKey(), ProviderConfig.from(entry.getKey(), (JsonObject) entry.getValue()))
         );
 
         return new SidecarConfig(port, Collections.unmodifiableMap(providers));

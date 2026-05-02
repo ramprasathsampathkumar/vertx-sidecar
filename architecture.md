@@ -3,157 +3,260 @@
 ## Motivation
 
 Enterprise teams building LLM features face the same cross-cutting concerns repeatedly:
-**Who called what model, at what cost, with what data, and did it comply with policy?**
+**who called what model, at what cost, with what data, and did it comply with policy?**
 
 Without a sidecar, each team solves this independently — inconsistent observability, keys
 scattered across services, no shared safety layer, and no ability to enforce org-wide spend
-controls. The sidecar moves these concerns out of application code and into infrastructure.
+controls. The sidecar moves these concerns out of application code and into infrastructure,
+one phase at a time.
 
 ---
 
-## Enterprise Context
+## Enterprise Overview
+
+Three teams. Three co-located sidecars. One shared observability stack.
+No team handles API keys, logging, or cost tracking directly.
 
 ```mermaid
 graph TB
-    subgraph "Engineering Teams"
-        T1["Order Service\n(Team A)"]
-        T2["Support Bot\n(Team B)"]
-        T3["Recommendation\n(Team C)"]
-    end
-
-    subgraph "Docker: Order Service"
+    subgraph OrderSvc ["Order Service"]
         direction LR
-        A1["Vert.x Lambda"]
-        SC1["LLM Sidecar\n:8080"]
-        A1 -->|"localhost:8080/openai"| SC1
+        LA["Vert.x Lambda"] -->|"SIDECAR_URL/openai"| SCA["LLM Sidecar"]
     end
 
-    subgraph "Docker: Support Bot"
+    subgraph SupportBot ["Support Bot"]
         direction LR
-        A2["Vert.x Lambda"]
-        SC2["LLM Sidecar\n:8080"]
-        A2 -->|"localhost:8080/anthropic"| SC2
+        LB["Vert.x Lambda"] -->|"SIDECAR_URL/anthropic"| SCB["LLM Sidecar"]
     end
 
-    subgraph "Docker: Recommendation"
+    subgraph RecEngine ["Recommendation Engine"]
         direction LR
-        A3["Vert.x Lambda"]
-        SC3["LLM Sidecar\n:8080"]
-        A3 -->|"localhost:8080/openai"| SC3
+        LC["Vert.x Lambda"] -->|"SIDECAR_URL/openai"| SCC["LLM Sidecar"]
     end
 
-    subgraph "LLM Providers"
+    subgraph Providers ["LLM Providers"]
         OAI["OpenAI"]
         ANT["Anthropic"]
-        BED["AWS Bedrock"]
     end
 
-    subgraph "Platform Observability"
+    subgraph Observability ["Platform Observability  (Phase 2)"]
         PROM["Prometheus"]
-        GRAF["Grafana\n(unified LLM dashboard)"]
-        OTEL["OpenTelemetry\nCollector"]
+        GRAF["Grafana\nunified LLM dashboard"]
     end
 
-    T1 --> A1
-    T2 --> A2
-    T3 --> A3
-
-    SC1 & SC2 & SC3 -->|"authenticated\nHTTPS"| OAI & ANT & BED
-    SC1 & SC2 & SC3 -->|"/metrics"| PROM
+    SCA & SCB & SCC -->|"authenticated HTTPS\nkeys injected by sidecar"| OAI & ANT
+    SCA & SCB & SCC -->|"GET /metrics"| PROM
     PROM --> GRAF
-    SC1 & SC2 & SC3 -->|"traces"| OTEL
 ```
 
 ---
 
-## Request Flow (Phase 1)
+## Phase 1 — Transparent Proxy ✅
 
-```mermaid
-sequenceDiagram
-    participant App as Vert.x Lambda
-    participant SC as LLM Sidecar :8080
-    participant OAI as OpenAI API
+**What it adds:** routing, auth injection, streaming passthrough, health endpoint.
 
-    App->>SC: POST /openai/v1/chat/completions<br/>(no API key needed)
+Teams change one env var (`SIDECAR_URL`). The sidecar reads API keys from the
+environment and injects them — keys never touch application code.
 
-    rect rgb(230, 245, 255)
-        Note over SC: Auth Injection Middleware<br/>reads OPENAI_API_KEY from env
-    end
-
-    SC->>OAI: POST /v1/chat/completions<br/>Authorization: Bearer sk-...
-
-    alt Non-streaming response
-        OAI-->>SC: 200 application/json { ... }
-        SC-->>App: 200 application/json { ... }
-    else Streaming response (stream: true)
-        OAI-->>SC: 200 text/event-stream<br/>data: {"delta": ...}\n\n
-        SC-->>App: chunks forwarded as received<br/>(zero buffering)
-    end
-```
-
----
-
-## Middleware Pipeline (all phases)
+### Component View
 
 ```mermaid
 graph LR
-    IN["Incoming\nRequest"]
+    APP(["App\nno API key needed"])
 
-    subgraph "Pre-processing"
+    subgraph SC1 ["LLM Sidecar"]
         direction TB
-        MW1["Auth Injection\n(Phase 1)"]
-        MW2["PII Redaction\n(Phase 3)"]
-        MW3["Rate Limiter\n(Phase 4)"]
-        MW4["Cache Lookup\n(Phase 4)"]
+        ROUTER["Router\n/health · /openai/* · /anthropic/*"]
+        AUTH["Auth Injection Middleware\nreads key from env\ninjects Authorization header"]
+        PROXY["Proxy Handler\nbuffers request body\npipes response back to caller"]
+        HEALTH["GET /health\n→ {status, providers}"]
+    end
+
+    LLM(["OpenAI / Anthropic\nauthenticated HTTPS"])
+
+    APP -->|"POST /openai/v1/..."| ROUTER
+    ROUTER --> AUTH --> PROXY
+    PROXY <-->|"request / response"| LLM
+    ROUTER --> HEALTH
+```
+
+### Request Flow
+
+```mermaid
+sequenceDiagram
+    participant App as Vert.x App
+    participant SC  as LLM Sidecar
+    participant LLM as OpenAI / Anthropic
+
+    App->>SC: POST /openai/v1/chat/completions<br/>(api_key = "ignored")
+
+    Note over SC: Auth Injection Middleware<br/>reads OPENAI_API_KEY from env<br/>injects Authorization: Bearer sk-...
+
+    SC->>LLM: POST /v1/chat/completions<br/>Authorization: Bearer sk-...
+
+    alt Non-streaming
+        LLM-->>SC: 200 application/json
+        SC-->>App: 200 application/json  (body forwarded)
+    else Streaming  (stream: true)
+        LLM-->>SC: 200 text/event-stream
+        loop SSE chunks
+            SC-->>App: chunk forwarded immediately  (zero buffering)
+        end
+    end
+```
+
+---
+
+## Phase 2 — Observability ✅  *(current)*
+
+**What it adds:** token tracking, cost estimation, latency + TTFT metrics,
+structured JSON logs, `/metrics` (Prometheus), `/metrics/json` (Gradio UI).
+
+The proxy handler branches on response type to capture metrics without breaking the
+streaming pipeline. For SSE, it scans chunks in-flight; for JSON it buffers once to
+parse the `usage` field.
+
+### Metrics Capture Pipeline
+
+```mermaid
+graph LR
+    LLM(["OpenAI / Anthropic"])
+
+    subgraph SC2 ["LLM Sidecar — Phase 2 additions"]
+        direction TB
+
+        subgraph PH ["Proxy Handler"]
+            BRANCH{"content-type?"}
+            SSE["SSE pipe\n· scan chunks for usage\n· TTFT on first content delta"]
+            BUF["Buffer response\n· parse usage field\n· extract token counts"]
+        end
+
+        STORE["MetricsStore\ntraceId · provider · model\npromptTokens · completionTokens\nlatencyMs · ttftMs · costUsd\n(ring buffer, last 100 requests)"]
+        LOG["Structured JSON log\nper request"]
+
+        EP1["GET /metrics\nPrometheus text format\ncounters + gauges + percentiles"]
+        EP2["GET /metrics/json\nfor Gradio Metrics tab"]
+    end
+
+    PROM(["Prometheus"])
+    UI(["Gradio UI\nMetrics tab"])
+
+    LLM -->|"response"| BRANCH
+    BRANCH -->|"text/event-stream"| SSE --> STORE
+    BRANCH -->|"application/json"| BUF --> STORE
+    STORE --> LOG
+    STORE --> EP1 --> PROM
+    STORE --> EP2 --> UI
+```
+
+### Observability Flow
+
+```mermaid
+sequenceDiagram
+    participant App  as Vert.x App
+    participant SC   as LLM Sidecar
+    participant LLM  as OpenAI
+    participant MS   as MetricsStore
+    participant PROM as Prometheus
+
+    App->>SC: POST /openai/v1/chat/completions
+
+    Note over SC: extract model from request body<br/>assign traceId (or forward x-request-id)
+
+    SC->>LLM: POST /v1/chat/completions<br/>x-request-id: {traceId}
+
+    alt Non-streaming
+        LLM-->>SC: 200 { ..., usage: { prompt_tokens: 13, completion_tokens: 9 } }
+        Note over SC: parse usage · calculate cost
+        SC-->>App: 200  (body forwarded)
+        SC->>MS: record(model, tokens=22, latencyMs, costUsd)
+    else Streaming
+        loop content chunks
+            LLM-->>SC: data: {"choices":[{"delta":{"content":"..."}}]}
+            SC-->>App: chunk forwarded
+            Note over SC: first content chunk → TTFT captured
+        end
+        LLM-->>SC: data: {"choices":[], "usage":{"prompt_tokens":13,...}}
+        SC-->>App: usage chunk forwarded
+        SC->>MS: record(model, tokens=22, latencyMs, ttftMs, costUsd)
+    end
+
+    Note over SC: emit JSON log  {event, traceId, model, tokens, latencyMs, costUsd}
+
+    PROM->>SC: GET /metrics  (scrape interval)
+    SC-->>PROM: llm_requests_total{model="gpt-4o-mini"} 42
+```
+
+---
+
+## Middleware Pipeline — All Phases
+
+Active phases (✅) are highlighted. Planned phases are greyed out.
+
+```mermaid
+graph LR
+    IN(["Incoming\nRequest"])
+
+    subgraph PRE ["Pre-processing"]
+        direction TB
+        MW1["Auth Injection\nPhase 1 ✅"]
+        MW2["PII Redaction\nPhase 3"]
+        MW3["Rate Limiter\nPhase 4"]
+        MW4["Cache Lookup\nPhase 4"]
         MW1 --> MW2 --> MW3 --> MW4
     end
 
-    PROXY["Upstream\nLLM Call"]
+    PROXY(["Upstream\nLLM Call"])
 
-    subgraph "Post-processing"
+    subgraph POST ["Post-processing"]
         direction TB
-        MW5["Output Policy\n(Phase 3)"]
-        MW6["Token Counter\n(Phase 2)"]
-        MW7["Cache Write\n(Phase 4)"]
-        MW8["Metrics Emit\n(Phase 2)"]
+        MW5["Output Policy\nPhase 3"]
+        MW6["Metrics Capture\nPhase 2 ✅"]
+        MW7["Cache Write\nPhase 4"]
+        MW8["Structured Log\nPhase 2 ✅"]
         MW5 --> MW6 --> MW7 --> MW8
     end
 
-    OUT["Outgoing\nResponse"]
+    OUT(["Outgoing\nResponse"])
 
     IN --> MW1
-    MW4 --> PROXY
+    MW4 -->|"cache miss"| PROXY
+    MW4 -->|"cache hit"| OUT
     PROXY --> MW5
     MW8 --> OUT
 
-    MW4 -->|"cache hit"| OUT
+    classDef done fill:#d4edda,stroke:#28a745,color:#155724
+    classDef planned fill:#f0f0f0,stroke:#bbb,color:#999,stroke-dasharray:4 2
+
+    class MW1,MW6,MW8 done
+    class MW2,MW3,MW4,MW5,MW7 planned
 ```
 
 ---
 
 ## Sidecar → Gateway Evolution
 
-As adoption grows, the per-Lambda sidecar can be promoted to a shared gateway. The
-middleware pipeline, config schema, and provider abstractions remain identical — only
-the deployment topology changes.
+As adoption grows, the co-located sidecar can be promoted to a shared gateway without
+touching any Lambda application code — the middleware pipeline, config schema, and
+provider abstractions remain identical.
 
 ```mermaid
 graph LR
-    subgraph "Phase 1–4: Sidecar per Lambda"
+    subgraph SIDE ["Phases 1–4 — Co-located Sidecar"]
         direction TB
         LA["Lambda A"] --> SCA["Sidecar"]
         LB["Lambda B"] --> SCB["Sidecar"]
         LC["Lambda C"] --> SCC["Sidecar"]
     end
 
-    subgraph "Phase 5: Shared Gateway"
+    subgraph GATE ["Phase 5 — Shared Gateway"]
         direction TB
-        LD["Lambda A"] --> GW["Central\nLLM Gateway"]
+        LD["Lambda A"] --> GW["Central LLM Gateway"]
         LE["Lambda B"] --> GW
         LF["Lambda C"] --> GW
     end
 
-    SCA & SCB & SCC -.->|"promote config\nno code change"| GW
+    SCA & SCB & SCC -.->|"same config · no code change"| GW
 ```
 
 The gateway adds: centralized key vault, cross-team budget enforcement, unified audit

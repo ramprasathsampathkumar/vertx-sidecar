@@ -8,7 +8,7 @@ Enterprise teams building LLM features independently hit the same wall: each tea
 
 The sidecar moves those concerns out of application code and into infrastructure:
 
-- **One env var change** to adopt — point your SDK base URL at `http://localhost:8080/openai` instead of OpenAI directly. Nothing else changes.
+- **One env var change** to adopt — point your SDK base URL at `http://<sidecar-host>/openai` instead of OpenAI directly. Nothing else changes.
 - **Keys never touch application code** — the sidecar reads API keys from env vars and injects them.
 - **Streaming works transparently** — SSE chunks are piped through without buffering.
 - **Grows with you** — starts as a co-located proxy, evolves into a shared LLM gateway.
@@ -79,15 +79,18 @@ docker compose down
 
 ## Calling the sidecar from your own app
 
-Change only the base URL in your SDK. No other code changes needed.
+Set `SIDECAR_URL` to wherever the sidecar is running — `http://localhost:8080` for local
+development, or the service hostname/IP in any other environment. Change only the base URL
+in your SDK. No other code changes needed.
 
 **Python**
 ```python
+import os
 from openai import OpenAI
 
 client = OpenAI(
-    api_key="ignored",                         # sidecar injects the real key
-    base_url="http://localhost:8080/openai/v1"
+    api_key="ignored",                                          # sidecar injects the real key
+    base_url=f"{os.environ['SIDECAR_URL']}/openai/v1"
 )
 response = client.chat.completions.create(
     model="gpt-4o-mini",
@@ -97,16 +100,18 @@ response = client.chat.completions.create(
 
 **Java (LangChain4j)**
 ```java
+String sidecarUrl = System.getenv("SIDECAR_URL"); // e.g. http://llm-sidecar:8080
+
 OpenAiChatModel model = OpenAiChatModel.builder()
     .apiKey("ignored")
-    .baseUrl("http://localhost:8080/openai/v1")
+    .baseUrl(sidecarUrl + "/openai/v1")
     .modelName("gpt-4o-mini")
     .build();
 ```
 
 **curl**
 ```bash
-curl http://localhost:8080/openai/v1/chat/completions \
+curl "$SIDECAR_URL/openai/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}'
 ```
@@ -164,7 +169,7 @@ vertx-sidecar/
 | Phase | Status | Adds |
 |---|---|---|
 | 1 — Proxy Foundation | ✅ Done | Transparent proxy, auth injection, streaming, Gradio chat UI |
-| 2 — Observability | Planned | Token tracking, cost estimates, latency metrics, Prometheus |
+| 2 — Observability | ✅ Done | Token tracking, cost estimates, latency metrics, Prometheus `/metrics`, live Metrics tab |
 | 3 — Safety | Planned | PII redaction, prompt injection detection, content policy |
 | 4 — Control Plane | Planned | Rate limiting, semantic caching, model routing, fallbacks |
 | 5 — Gateway Evolution | Planned | Shared gateway, key vault, multi-team config, admin API |

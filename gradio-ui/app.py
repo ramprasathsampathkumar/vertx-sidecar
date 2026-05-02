@@ -106,6 +106,60 @@ def respond(message, history, model, system_prompt, do_stream, sidecar_url):
         yield updated(f"❌ {e}"), req_json, str(e), elapsed, "—"
 
 
+def refresh_metrics(sidecar_url: str):
+    """Fetch /metrics/json and return (summary, model_rows, recent_rows)."""
+    try:
+        resp = urlopen(f"{sidecar_url}/metrics/json", timeout=5)
+        data = json.loads(resp.read())
+    except Exception as e:
+        msg = f"❌ Could not reach sidecar — {e}"
+        empty = [["—"] * 9]
+        return msg, empty, empty
+
+    totals = data.get("totals", {})
+    total_tokens = totals.get("promptTokens", 0) + totals.get("completionTokens", 0)
+    summary = (
+        f"Requests: {totals.get('requests', 0)}  |  "
+        f"Tokens: {total_tokens}  |  "
+        f"Est. Cost: ${totals.get('estimatedCostUsd', 0):.4f}  |  "
+        f"Errors: {totals.get('errors', 0)}"
+    )
+
+    by_model = data.get("byModel", {})
+    model_rows = [
+        [
+            model,
+            m["requests"],
+            m["promptTokens"],
+            m["completionTokens"],
+            f"${m['estimatedCostUsd']:.5f}",
+            m["errors"],
+            m["avgLatencyMs"],
+            m["p50LatencyMs"],
+            m["p95LatencyMs"],
+        ]
+        for model, m in by_model.items()
+    ] or [["No data yet", 0, 0, 0, "$0.00000", 0, 0, 0, 0]]
+
+    recent = data.get("recentRequests", [])
+    recent_rows = [
+        [
+            r["traceId"][:8],
+            r.get("model", ""),
+            r["statusCode"],
+            "✓" if r["streaming"] else "",
+            r["promptTokens"],
+            r["completionTokens"],
+            f"${r['estimatedCostUsd']:.5f}",
+            r["latencyMs"],
+            r["ttftMs"] if r["ttftMs"] >= 0 else "—",
+        ]
+        for r in reversed(recent[-20:])
+    ] or [["No requests yet", "", "", "", 0, 0, "$0.00000", 0, "—"]]
+
+    return summary, model_rows, recent_rows
+
+
 # ── UI ────────────────────────────────────────────────────────────────────────
 
 with gr.Blocks(title="LLM Sidecar Monitor") as app:
@@ -159,19 +213,37 @@ with gr.Blocks(title="LLM Sidecar Monitor") as app:
                     with gr.Accordion("Response JSON", open=False):
                         response_box = gr.Code(language="json", label="")
 
-        # ── Phase 2 placeholder ───────────────────────────────────────────────
-        with gr.Tab("📊 Metrics — Phase 2"):
-            gr.Markdown("""
-### Coming in Phase 2
+        # ── Phase 2: Metrics ──────────────────────────────────────────────────
+        with gr.Tab("📊 Metrics"):
+            with gr.Row():
+                metrics_url_input = gr.Textbox(
+                    value=SIDECAR_URL, label="Sidecar URL", scale=4
+                )
+                metrics_refresh_btn = gr.Button("↻ Refresh", variant="primary", scale=1)
 
-Once the sidecar emits a `/metrics` Prometheus endpoint, this tab will show:
+            metrics_summary = gr.Textbox(label="Overview", interactive=False)
 
-- Token usage per request — input / output / total, by model and team
-- Cost estimates in real-time based on current model pricing
-- Latency distribution — p50 / p95 / p99, plus TTFT histogram for streaming calls
-- Error rates per provider (4xx / 5xx breakdown)
-- Grafana dashboard link for production-grade alerting
-            """)
+            gr.Markdown("### By Model")
+            metrics_model_table = gr.Dataframe(
+                headers=[
+                    "Model", "Requests", "Prompt Tokens", "Completion Tokens",
+                    "Est. Cost", "Errors", "Avg ms", "P50 ms", "P95 ms",
+                ],
+                interactive=False,
+                wrap=True,
+            )
+
+            gr.Markdown("### Recent Requests  _(newest first)_")
+            metrics_recent_table = gr.Dataframe(
+                headers=[
+                    "Trace", "Model", "Status", "Stream",
+                    "Prompt", "Completion", "Cost", "Latency ms", "TTFT ms",
+                ],
+                interactive=False,
+                wrap=True,
+            )
+
+            metrics_timer = gr.Timer(value=10)
 
         # ── Phase 3 placeholder ───────────────────────────────────────────────
         with gr.Tab("🛡️ Safety — Phase 3"):
@@ -201,13 +273,13 @@ Once the control plane is active, this tab will show:
 
     # ── Event wiring ──────────────────────────────────────────────────────────
 
-    _outputs = [chatbot, request_box, response_box, latency_box, tokens_box]
-    _inputs = [msg_input, chatbot, model_dd, system_prompt_input, stream_cb, sidecar_url_input]
+    _chat_outputs = [chatbot, request_box, response_box, latency_box, tokens_box]
+    _chat_inputs = [msg_input, chatbot, model_dd, system_prompt_input, stream_cb, sidecar_url_input]
 
-    send_btn.click(respond, inputs=_inputs, outputs=_outputs).then(
+    send_btn.click(respond, inputs=_chat_inputs, outputs=_chat_outputs).then(
         lambda: "", outputs=[msg_input]
     )
-    msg_input.submit(respond, inputs=_inputs, outputs=_outputs).then(
+    msg_input.submit(respond, inputs=_chat_inputs, outputs=_chat_outputs).then(
         lambda: "", outputs=[msg_input]
     )
     clear_btn.click(
@@ -216,6 +288,10 @@ Once the control plane is active, this tab will show:
     )
     check_btn.click(check_health, inputs=[sidecar_url_input], outputs=[status_box])
     app.load(check_health, inputs=[sidecar_url_input], outputs=[status_box])
+
+    _metrics_outputs = [metrics_summary, metrics_model_table, metrics_recent_table]
+    metrics_refresh_btn.click(refresh_metrics, inputs=[metrics_url_input], outputs=_metrics_outputs)
+    metrics_timer.tick(refresh_metrics, inputs=[metrics_url_input], outputs=_metrics_outputs)
 
 
 if __name__ == "__main__":
