@@ -8,7 +8,7 @@ safety, and control for free. Evolves into a centralized LLM gateway at Phase 5.
 
 ---
 
-## Phase 1 — Proxy Foundation ✅ (current)
+## Phase 1 — Proxy Foundation ✅
 
 **Goal**: Zero-friction adoption. One env var change, full transparency.
 
